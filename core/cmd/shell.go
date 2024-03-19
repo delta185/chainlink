@@ -32,7 +32,9 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/smartcontractkit/chainlink-common/pkg/loop"
+	"github.com/smartcontractkit/chainlink-common/pkg/sqlutil"
 	"github.com/smartcontractkit/chainlink-common/pkg/utils/mailbox"
+	"github.com/smartcontractkit/chainlink/v2/core/services/pg"
 
 	"github.com/smartcontractkit/chainlink/v2/core/build"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/legacyevm"
@@ -136,7 +138,7 @@ type AppFactory interface {
 type ChainlinkAppFactory struct{}
 
 // NewApplication returns a new instance of the node with the given config.
-func (n ChainlinkAppFactory) NewApplication(ctx context.Context, cfg chainlink.GeneralConfig, appLggr logger.Logger, db *sqlx.DB) (app chainlink.Application, err error) {
+func (n ChainlinkAppFactory) NewApplication(ctx context.Context, cfg chainlink.GeneralConfig, appLggr logger.Logger, sqlxDB *sqlx.DB) (app chainlink.Application, err error) {
 	err = initGlobals(cfg.Prometheus(), cfg.Tracing(), appLggr)
 	if err != nil {
 		appLggr.Errorf("Failed to initialize globals: %v", err)
@@ -147,12 +149,14 @@ func (n ChainlinkAppFactory) NewApplication(ctx context.Context, cfg chainlink.G
 		return nil, err
 	}
 
-	err = handleNodeVersioning(ctx, db, appLggr, cfg.RootDir(), cfg.Database(), cfg.WebServer().HTTPPort())
+	db := sqlutil.WrapDataSource(sqlxDB, appLggr, sqlutil.TimeoutHook(pg.DefaultQueryTimeout), sqlutil.MonitorHook(cfg.Database().LogSQL))
+
+	err = handleNodeVersioning(ctx, sqlxDB, appLggr, cfg.RootDir(), cfg.Database(), cfg.WebServer().HTTPPort())
 	if err != nil {
 		return nil, err
 	}
 
-	keyStore := keystore.New(db, utils.GetScryptParams(cfg), appLggr, cfg.Database())
+	keyStore := keystore.New(sqlxDB, utils.GetScryptParams(cfg), appLggr, cfg.Database())
 	mailMon := mailbox.NewMonitor(cfg.AppID().String(), appLggr.Named("Mailbox"))
 
 	loopRegistry := plugins.NewLoopRegistry(appLggr, cfg.Tracing())
@@ -173,7 +177,7 @@ func (n ChainlinkAppFactory) NewApplication(ctx context.Context, cfg chainlink.G
 
 	evmFactoryCfg := chainlink.EVMFactoryConfig{
 		CSAETHKeystore: keyStore,
-		ChainOpts:      legacyevm.ChainOpts{AppConfig: cfg, MailMon: mailMon, DB: db},
+		ChainOpts:      legacyevm.ChainOpts{AppConfig: cfg, MailMon: mailMon, SqlxDB: sqlxDB, DB: sqlxDB},
 	}
 	// evm always enabled for backward compatibility
 	// TODO BCF-2510 this needs to change in order to clear the path for EVM extraction
@@ -183,7 +187,7 @@ func (n ChainlinkAppFactory) NewApplication(ctx context.Context, cfg chainlink.G
 		cosmosCfg := chainlink.CosmosFactoryConfig{
 			Keystore:    keyStore.Cosmos(),
 			TOMLConfigs: cfg.CosmosConfigs(),
-			DB:          db,
+			DB:          sqlxDB,
 			QConfig:     cfg.Database(),
 		}
 		initOps = append(initOps, chainlink.InitCosmos(ctx, relayerFactory, cosmosCfg))
@@ -217,10 +221,11 @@ func (n ChainlinkAppFactory) NewApplication(ctx context.Context, cfg chainlink.G
 
 	restrictedClient := clhttp.NewRestrictedHTTPClient(cfg.Database(), appLggr)
 	unrestrictedClient := clhttp.NewUnrestrictedHTTPClient()
-	externalInitiatorManager := webhook.NewExternalInitiatorManager(db, unrestrictedClient, appLggr, cfg.Database())
+	externalInitiatorManager := webhook.NewExternalInitiatorManager(sqlxDB, unrestrictedClient, appLggr, cfg.Database())
 	return chainlink.NewApplication(chainlink.ApplicationOpts{
 		Config:                     cfg,
-		SqlxDB:                     db,
+		SqlxDB:                     sqlxDB,
+		DB:                         db,
 		KeyStore:                   keyStore,
 		RelayerChainInteroperators: relayChainInterops,
 		MailMon:                    mailMon,
