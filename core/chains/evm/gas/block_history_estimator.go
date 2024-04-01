@@ -25,6 +25,7 @@ import (
 	feetypes "github.com/smartcontractkit/chainlink/v2/common/fee/types"
 	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/assets"
 	evmclient "github.com/smartcontractkit/chainlink/v2/core/chains/evm/client"
+	"github.com/smartcontractkit/chainlink/v2/core/chains/evm/gas/rollups"
 	evmtypes "github.com/smartcontractkit/chainlink/v2/core/chains/evm/types"
 )
 
@@ -121,6 +122,8 @@ type (
 		initialFetch atomic.Bool
 
 		logger logger.SugaredLogger
+
+		l1Oracle *rollups.L1Oracle
 	}
 )
 
@@ -129,6 +132,10 @@ type (
 // configured percentile of gas prices in that block
 func NewBlockHistoryEstimator(lggr logger.Logger, ethClient evmclient.Client, cfg chainConfig, eCfg estimatorGasEstimatorConfig, bhCfg BlockHistoryConfig, chainID big.Int) EvmEstimator {
 	ctx, cancel := context.WithCancel(context.Background())
+	var l1Oracle rollups.L1Oracle
+	if rollups.IsRollupWithL1Support(cfg.ChainType()) {
+		l1Oracle = rollups.NewL1GasOracle(lggr, ethClient, cfg.ChainType())
+	}
 	b := &BlockHistoryEstimator{
 		ethClient: ethClient,
 		chainID:   chainID,
@@ -143,6 +150,7 @@ func NewBlockHistoryEstimator(lggr logger.Logger, ethClient evmclient.Client, cf
 		ctx:       ctx,
 		ctxCancel: cancel,
 		logger:    logger.Sugared(logger.Named(lggr, "BlockHistoryEstimator")),
+		l1Oracle:  &l1Oracle,
 	}
 
 	return b
